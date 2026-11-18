@@ -44,7 +44,7 @@ cd dsh-web-launcher
 
 ## 行为
 
-- 从别的应用切回来时，第一次轻点不会被拿去激活窗口：启动器先激活窗口，再在页面里对同一坐标执行一次 JS 点击，轻点和按压都能一下就响应。
+- 轻点（触控板 tap to click）和按压一样一下就响应：窗口开 `acceptsMouseMovedEvents` 让 WebKit 的 hit-test 位置保持新鲜，网页容器覆写 `acceptsFirstMouse` 让切回应用后的第一次点击直接落到控件上。不要在 `mouseDown` 里改第一响应者——轻点的按下和抬起同批到达，中间插一次焦点变更会让页面合成不出 `click`。
 - 启动 `node <cli> web --no-open --host <host> --port <port>`，从它的 stdout 里取带一次性 token 的 URL，用 WKWebView 打开。60 秒没等到 URL 就判定失败，停掉 host 并显示错误页，附 stderr 和日志路径。
 - 关窗、Cmd+Q、`kill -TERM` 走同一条退出路径：先 SIGTERM，7 秒不退再 SIGKILL，host 停掉后 App 才退出。
 - 下载存到 `~/Downloads`，外部链接交给系统浏览器，页面的 alert/confirm/prompt 用原生弹窗。日志在 `~/Library/Logs/DSH Web Launcher.log`，菜单「显示 → 打开日志」直接打开。

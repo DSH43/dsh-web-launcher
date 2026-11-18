@@ -322,17 +322,11 @@ final class HostServer {
 
 /// 窗口不在前台时，第一次点击也交给网页里的控件。默认实现只拿这次点击激活窗口，
 /// 用户看到的就是按钮要点两下才响应。
+///
+/// 这里不要再覆写 `mouseDown`：轻点（tap to click）的 mouseDown 和 mouseUp 是同批到达的，
+/// 中间插一次 `makeFirstResponder` 会打断 WebKit 的按下/抬起配对，页面就合成不出 click。
 final class ClickThroughWebView: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
-
-    /// 网页容器不是第一响应者时，WebKit 会拿第一次 mouseDown 去聚焦，
-    /// 页面收不到这次点击。先把焦点拿到手，再交给 WebKit 处理。
-    override func mouseDown(with event: NSEvent) {
-        if window?.firstResponder !== self {
-            window?.makeFirstResponder(self)
-        }
-        super.mouseDown(with: event)
-    }
 }
 
 // MARK: - App
@@ -347,8 +341,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var launchURL: URL?
     private var startupTimeout: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
-    private var clickMonitor: Any?
-    private var tapDown: NSEvent?
     private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -357,79 +349,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         buildMenu()
         buildWindow()
         beginHost()
-        installClickGuard()
-    }
-
-    /// 轻点偶尔会被 WebKit 吞掉，物理点击正常。两边的事件参数完全一样，没法靠类型区分，
-    /// 所以每次点完都去页面里确认一下：已有 click 就什么都不做，没有就补一次 JS 点击。
-    private func installClickGuard() {
-        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
-            self?.trackTap(event)
-            return event
-        }
-    }
-
-    private func trackTap(_ event: NSEvent) {
-        guard let window, let contentView = window.contentView, event.window === window else { return }
-        guard window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
-        guard contentView.frame.contains(event.locationInWindow) else { return }
-        switch event.type {
-        case .leftMouseDown:
-            tapDown = event
-        case .leftMouseUp:
-            guard let down = tapDown else { return }
-            tapDown = nil
-            let duration = event.timestamp - down.timestamp
-            let dx = abs(event.locationInWindow.x - down.locationInWindow.x)
-            let dy = abs(event.locationInWindow.y - down.locationInWindow.y)
-            guard duration < 0.2, dx < 4, dy < 4 else { return }
-            let point = event.locationInWindow
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-                self?.ensureClickLanded(at: point)
-            }
-        default:
-            break
-        }
-    }
-
-    private func ensureClickLanded(at point: NSPoint) {
-        guard let webView else { return }
-        let cssX = point.x
-        let cssY = webView.bounds.height - point.y
-        let js = """
-        (function(){
-          if (Date.now() - (window.__dshPageStart || 0) < 800) return 'fresh';
-          var last = window.__dshLastClick || 0;
-          if (Date.now() - last < 700) return 'native';
-          var el = document.elementFromPoint(\(cssX), \(cssY));
-          if (!el) return 'none';
-          el.click();
-          return 'js|' + el.tagName + '|' + (el.textContent || '').slice(0, 24);
-        })()
-        """
-        webView.evaluateJavaScript(js) { value, error in
-            guard let value = value as? String else {
-                if let error { logLine("补点击失败: \(error)") }
-                return
-            }
-            if value.hasPrefix("js|") { logLine("补点击: \(value)") }
-        }
-    }
-
-    func applicationDidBecomeActive(_ notification: Notification) {
-        ensureWebFocus()
-    }
-
-    func windowDidBecomeKey(_ notification: Notification) {
-        ensureWebFocus()
-    }
-
-    private func ensureWebFocus() {
-        guard let window, let webView else { return }
-        // 端口冲突提示之类的模态窗口在前台时不要抢焦点。
-        guard window.isKeyWindow, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
-        guard window.firstResponder !== webView else { return }
-        window.makeFirstResponder(webView)
     }
 
     /// 让 `kill -TERM` 也走 AppKit 的正常退出路径，触发 host 收尾。
@@ -464,12 +383,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
-        let tracker = WKUserScript(
-            source: "window.__dshPageStart = Date.now(); window.addEventListener('click', function(){ window.__dshLastClick = Date.now(); }, true);",
-            injectionTime: .atDocumentStart,
-            forMainFrameOnly: false
-        )
-        configuration.userContentController.addUserScript(tracker)
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
         webView = ClickThroughWebView(frame: frame, configuration: configuration)
@@ -477,7 +390,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         window.contentView = webView
-        // 先拿住第一响应者：否则回前台后的第一次点击会被网页容器拿去聚焦，不落到按钮上。
+        // 轻点不会先产生移动事件，WebKit 要靠 mouseMoved 维持 hover/hit-test 位置新鲜。
+        // NSWindow 默认不收 mouseMoved，不打开就会命中到上一个位置，看起来像要点两下才响应。
+        window.acceptsMouseMovedEvents = true
         window.initialFirstResponder = webView
         window.makeFirstResponder(webView)
 

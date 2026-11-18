@@ -320,6 +320,12 @@ final class HostServer {
     }
 }
 
+/// 窗口不在前台时，第一次点击也交给网页里的控件。默认实现只拿这次点击激活窗口，
+/// 用户看到的就是按钮要点两下才响应。
+final class ClickThroughWebView: WKWebView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 // MARK: - App
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
@@ -376,7 +382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         configuration.websiteDataStore = .default()
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
-        webView = WKWebView(frame: frame, configuration: configuration)
+        webView = ClickThroughWebView(frame: frame, configuration: configuration)
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true

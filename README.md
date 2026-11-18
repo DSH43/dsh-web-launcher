@@ -44,7 +44,7 @@ cd dsh-web-launcher
 
 ## 行为
 
-- WebView 常驻第一响应者：从别的应用切回来时，第一次点击直接落到页面控件上，不会先被容器拿去聚焦。
+- 从别的应用切回来时，第一次点击不会被拿去激活窗口：启动器先激活窗口，再把这次按下和抬起重放给 WebView，按钮一下就响应。
 - 启动 `node <cli> web --no-open --host <host> --port <port>`，从它的 stdout 里取带一次性 token 的 URL，用 WKWebView 打开。60 秒没等到 URL 就判定失败，停掉 host 并显示错误页，附 stderr 和日志路径。
 - 关窗、Cmd+Q、`kill -TERM` 走同一条退出路径：先 SIGTERM，7 秒不退再 SIGKILL，host 停掉后 App 才退出。
 - 下载存到 `~/Downloads`，外部链接交给系统浏览器，页面的 alert/confirm/prompt 用原生弹窗。日志在 `~/Library/Logs/DSH Web Launcher.log`，菜单「显示 → 打开日志」直接打开。

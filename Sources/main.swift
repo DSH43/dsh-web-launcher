@@ -348,6 +348,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var startupTimeout: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
     private var clickMonitor: Any?
+    private var pendingClickDown: NSEvent?
+    private var pendingClickUp: NSEvent?
+    private var awaitingFirstClick = true
     private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -356,10 +359,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         buildMenu()
         buildWindow()
         beginHost()
-        // 点击进来之前先把焦点放回网页，避免第一次点击被容器吞掉。
-        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
-            self?.ensureWebFocus()
+        installClickReplay()
+    }
+
+    /// 应用不在前台时，第一次点击只用来激活窗口，网页收不到。
+    /// 这里先吞掉这次按下，激活窗口，再把按下和抬起重新交给 WebView。
+    private func installClickReplay() {
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
+            guard let self else { return event }
+            return self.replayClick(event)
+        }
+    }
+
+    private func replayClick(_ event: NSEvent) -> NSEvent? {
+        guard let window, let contentView = window.contentView, event.window === window else { return event }
+        guard window.attachedSheet == nil, NSApp.modalWindow == nil else { return event }
+        guard contentView.frame.contains(event.locationInWindow) else { return event }
+        switch event.type {
+        case .leftMouseDown:
+            guard awaitingFirstClick else { return event }
+            awaitingFirstClick = false
+            // 标题栏上的点击交给系统处理，只接管网页内容区。
+            guard contentView.frame.contains(event.locationInWindow) else { return event }
+            pendingClickDown = event
+            pendingClickUp = nil
+            if !NSApp.isActive {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+            }
+            logLine("首次点击重放，位置 \(event.locationInWindow)")
+            scheduleClickReplay()
+            return nil
+        case .leftMouseUp:
+            guard pendingClickDown != nil else { return event }
+            pendingClickUp = event
+            return nil
+        default:
             return event
+        }
+    }
+
+    private func scheduleClickReplay(attempt: Int = 0) {
+        guard let window, let webView, let down = pendingClickDown else { return }
+        guard attempt < 100 else {
+            pendingClickDown = nil
+            pendingClickUp = nil
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
+            guard let self, self.pendingClickDown != nil else { return }
+            guard NSApp.isActive, window.isKeyWindow else {
+                self.scheduleClickReplay(attempt: attempt + 1)
+                return
+            }
+            window.makeFirstResponder(webView)
+            window.sendEvent(down)
+            if let up = self.pendingClickUp {
+                window.sendEvent(up)
+            }
+            self.pendingClickDown = nil
+            self.pendingClickUp = nil
         }
     }
 
@@ -369,6 +428,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func windowDidBecomeKey(_ notification: Notification) {
         ensureWebFocus()
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        awaitingFirstClick = true
     }
 
     private func ensureWebFocus() {

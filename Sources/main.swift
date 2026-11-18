@@ -377,7 +377,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard contentView.frame.contains(event.locationInWindow) else { return event }
         switch event.type {
         case .leftMouseDown:
-            logLine("收到点击 active=\(NSApp.isActive) key=\(window.isKeyWindow) awaiting=\(awaitingFirstClick)")
             guard awaitingFirstClick else { return event }
             awaitingFirstClick = false
             // 标题栏上的点击交给系统处理，只接管网页内容区。

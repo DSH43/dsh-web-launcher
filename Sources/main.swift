@@ -377,10 +377,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard contentView.frame.contains(event.locationInWindow) else { return event }
         switch event.type {
         case .leftMouseDown:
-            guard awaitingFirstClick else { return event }
-            awaitingFirstClick = false
-            // 标题栏上的点击交给系统处理，只接管网页内容区。
+            // 标题栏上的点击交给系统处理，也不清「首次点击」标记：
+            // 点标题栏激活窗口之后，下一次点内容仍然需要重放。
             guard contentView.frame.contains(event.locationInWindow) else { return event }
+            let needsFocus = window.firstResponder !== webView
+            guard awaitingFirstClick || needsFocus else { return event }
+            awaitingFirstClick = false
             pendingClickDown = event
             pendingClickUp = nil
             if !NSApp.isActive {

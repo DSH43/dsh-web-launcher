@@ -4,6 +4,8 @@
 
 > 非官方工具，和 DeepSeek / DSH 官方没有隶属关系。App 图标取自 DSH Web 的图标资源，仅用于标识本启动器，不在本仓库 MIT 许可范围内。
 
+![DSH Web Launcher 界面](assets/screenshot.png)
+
 ## 安装
 
 要求：macOS 13+、Xcode Command Line Tools（`swiftc`）、Node.js，以及一份构建好的 DSH 源码检出（至少要有 `apps/cli/lib/bin.js`）。

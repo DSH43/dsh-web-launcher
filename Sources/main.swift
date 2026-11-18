@@ -413,12 +413,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
                 return
             }
             window.makeFirstResponder(webView)
-            window.sendEvent(down)
-            if let up = self.pendingClickUp {
-                window.sendEvent(up)
+            // 激活后再等一小会儿，给 WebKit 的 web 进程恢复焦点的时间。
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                webView.evaluateJavaScript("window.focus(); (document.body && document.body.focus()); String(document.hasFocus())") { value, _ in
+                    logLine("重放前 hasFocus=\(value ?? "nil")")
+                    window.sendEvent(down)
+                    if let up = self.pendingClickUp {
+                        window.sendEvent(up)
+                    }
+                    logLine("重放完成 active=\(NSApp.isActive) key=\(window.isKeyWindow)")
+                    self.pendingClickDown = nil
+                    self.pendingClickUp = nil
+                }
             }
-            self.pendingClickDown = nil
-            self.pendingClickUp = nil
         }
     }
 
@@ -495,6 +502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             DispatchQueue.main.async {
                 guard let self else { return }
                 let pageTitle = view.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                logLine("页面标题: \(pageTitle)")
                 self.window.title = pageTitle.isEmpty ? "DSH Web" : "DSH Web · \(pageTitle)"
             }
         }

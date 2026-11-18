@@ -348,9 +348,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var startupTimeout: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
     private var clickMonitor: Any?
-    private var pendingClickDown: NSEvent?
-    private var pendingClickUp: NSEvent?
-    private var awaitingFirstClick = true
+    private var tapDown: NSEvent?
     private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -359,80 +357,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         buildMenu()
         buildWindow()
         beginHost()
-        installClickReplay()
+        installClickGuard()
     }
 
-    /// 应用不在前台时，第一次点击只用来激活窗口，网页收不到。
-    /// 这里先吞掉这次按下，激活窗口，再把按下和抬起重新交给 WebView。
-    private func installClickReplay() {
+    /// 轻点偶尔会被 WebKit 吞掉，物理点击正常。两边的事件参数完全一样，没法靠类型区分，
+    /// 所以每次点完都去页面里确认一下：已有 click 就什么都不做，没有就补一次 JS 点击。
+    private func installClickGuard() {
         clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseUp]) { [weak self] event in
-            guard let self else { return event }
-            return self.replayClick(event)
-        }
-    }
-
-    private func replayClick(_ event: NSEvent) -> NSEvent? {
-        guard let window, let contentView = window.contentView, event.window === window else { return event }
-        guard window.attachedSheet == nil, NSApp.modalWindow == nil else { return event }
-        guard contentView.frame.contains(event.locationInWindow) else { return event }
-        switch event.type {
-        case .leftMouseDown:
-            // 标题栏上的点击交给系统处理，也不清「首次点击」标记：
-            // 点标题栏激活窗口之后，下一次点内容仍然需要重放。
-            guard contentView.frame.contains(event.locationInWindow) else { return event }
-            let needsFocus = window.firstResponder !== webView
-            guard awaitingFirstClick || needsFocus else { return event }
-            awaitingFirstClick = false
-            pendingClickDown = event
-            pendingClickUp = nil
-            if !NSApp.isActive {
-                NSApp.activate(ignoringOtherApps: true)
-                window.makeKeyAndOrderFront(nil)
-            }
-            logLine("首次点击重放，位置 \(event.locationInWindow)")
-            scheduleClickReplay()
-            return nil
-        case .leftMouseUp:
-            guard pendingClickDown != nil else { return event }
-            pendingClickUp = event
-            return nil
-        default:
+            self?.trackTap(event)
             return event
         }
     }
 
-    private func scheduleClickReplay(attempt: Int = 0) {
-        guard let window, let webView, let down = pendingClickDown else { return }
-        guard attempt < 100 else {
-            pendingClickDown = nil
-            pendingClickUp = nil
-            return
+    private func trackTap(_ event: NSEvent) {
+        guard let window, let contentView = window.contentView, event.window === window else { return }
+        guard window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        guard contentView.frame.contains(event.locationInWindow) else { return }
+        switch event.type {
+        case .leftMouseDown:
+            tapDown = event
+        case .leftMouseUp:
+            guard let down = tapDown else { return }
+            tapDown = nil
+            let duration = event.timestamp - down.timestamp
+            let dx = abs(event.locationInWindow.x - down.locationInWindow.x)
+            let dy = abs(event.locationInWindow.y - down.locationInWindow.y)
+            guard duration < 0.2, dx < 4, dy < 4 else { return }
+            let point = event.locationInWindow
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                self?.ensureClickLanded(at: point)
+            }
+        default:
+            break
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { [weak self] in
-            guard let self, self.pendingClickDown != nil else { return }
-            guard NSApp.isActive, window.isKeyWindow else {
-                self.scheduleClickReplay(attempt: attempt + 1)
+    }
+
+    private func ensureClickLanded(at point: NSPoint) {
+        guard let webView else { return }
+        let cssX = point.x
+        let cssY = webView.bounds.height - point.y
+        let js = """
+        (function(){
+          if (Date.now() - (window.__dshPageStart || 0) < 800) return 'fresh';
+          var last = window.__dshLastClick || 0;
+          if (Date.now() - last < 700) return 'native';
+          var el = document.elementFromPoint(\(cssX), \(cssY));
+          if (!el) return 'none';
+          el.click();
+          return 'js|' + el.tagName + '|' + (el.textContent || '').slice(0, 24);
+        })()
+        """
+        webView.evaluateJavaScript(js) { value, error in
+            guard let value = value as? String else {
+                if let error { logLine("补点击失败: \(error)") }
                 return
             }
-            window.makeFirstResponder(webView)
-            // 激活后再等一小会儿，给 WebKit 的 web 进程恢复焦点的时间。
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                let cssX = down.locationInWindow.x
-                let cssY = webView.bounds.height - down.locationInWindow.y
-                let js = """
-                (function(){
-                  var el = document.elementFromPoint(\(cssX), \(cssY));
-                  if (!el) return 'nil';
-                  el.click();
-                  return el.tagName + '|' + (el.textContent || '').slice(0, 30);
-                })()
-                """
-                webView.evaluateJavaScript(js) { value, error in
-                    logLine("JS点击: \(value ?? error.map { "\($0)" } ?? "nil")")
-                    self.pendingClickDown = nil
-                    self.pendingClickUp = nil
-                }
-            }
+            if value.hasPrefix("js|") { logLine("补点击: \(value)") }
         }
     }
 
@@ -442,10 +422,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
     func windowDidBecomeKey(_ notification: Notification) {
         ensureWebFocus()
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        awaitingFirstClick = true
     }
 
     private func ensureWebFocus() {
@@ -488,6 +464,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
 
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .default()
+        let tracker = WKUserScript(
+            source: "window.__dshPageStart = Date.now(); window.addEventListener('click', function(){ window.__dshLastClick = Date.now(); }, true);",
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: false
+        )
+        configuration.userContentController.addUserScript(tracker)
         configuration.preferences.setValue(true, forKey: "developerExtrasEnabled")
 
         webView = ClickThroughWebView(frame: frame, configuration: configuration)

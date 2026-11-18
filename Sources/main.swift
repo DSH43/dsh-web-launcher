@@ -424,6 +424,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
                 self.showError(title: "DSH 启动失败", detail: detail)
             }
         }
+        promptPortIfNeeded()
+    }
+
+    /// 端口被占用时先问用户：是不是停掉占用它的 dsh web，再起自己的 host。
+    /// 只对命令行看起来像 dsh web 的进程提供「停止并启动」；其它进程不动。
+    private func promptPortIfNeeded() {
+        guard config.port > 0, !isTerminating else {
+            startHostProcess()
+            return
+        }
+        let pids = listeningPIDs()
+        guard !pids.isEmpty else {
+            startHostProcess()
+            return
+        }
+        let pid = pids[0]
+        let command = commandLine(of: pid)
+        let dsh = looksLikeDSHWeb(command)
+        let shownCommand = command.count > 240 ? String(command.prefix(240)) + "…" : command
+        logLine("端口 \(config.port) 被占用：pid=\(pid) command=\(command)")
+
+        let alert = NSAlert()
+        alert.messageText = "端口 \(config.port) 已被占用"
+        if dsh {
+            alert.informativeText = "占用进程：PID \(pid)\n\(shownCommand)\n\n停掉它，用启动器重新启动 DSH 吗？"
+            alert.addButton(withTitle: "停止并启动")
+            alert.addButton(withTitle: "取消")
+            alert.buttons[0].keyEquivalent = "\r"
+            alert.buttons[1].keyEquivalent = "\u{1b}"
+        } else {
+            alert.informativeText = "占用进程：PID \(pid)\n\(shownCommand)\n\n看起来不是 dsh web，启动器不会动它。请手动处理后重新打开。"
+            alert.addButton(withTitle: "好")
+            alert.buttons[0].keyEquivalent = "\r"
+        }
+
+        let response = alert.runModal()
+        if dsh {
+            if response == .alertFirstButtonReturn {
+                stopProcessesAndStart(pids)
+            } else {
+                showError(title: "已取消启动", detail: "端口 \(config.port) 仍被 PID \(pid) 占用，没有启动新的 host。")
+            }
+        } else {
+            showError(title: "端口被占用", detail: "端口 \(config.port) 被 PID \(pid) 占用：\n\(command)")
+        }
+    }
+
+    private func startHostProcess() {
         do {
             try server.start(config: config)
         } catch {
@@ -431,6 +479,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             return
         }
         armStartupTimeout()
+    }
+
+    /// 先 SIGTERM，最多等 8 秒；不退再 SIGKILL，最后确认端口真的空出来。
+    private func stopProcessesAndStart(_ pids: [Int32]) {
+        webView.loadHTMLString(Self.loadingHTML, baseURL: nil)
+        logLine("停掉占用 \(config.port) 的进程：\(pids.map(String.init).joined(separator: ","))")
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            for pid in pids {
+                _ = kill(pid, SIGTERM)
+            }
+            var free = self.waitForPortFree(timeout: 8)
+            if !free {
+                let remaining = self.listeningPIDs()
+                for pid in remaining {
+                    _ = kill(pid, SIGKILL)
+                }
+                logLine("SIGTERM 没退，SIGKILL：\(remaining.map(String.init).joined(separator: ","))")
+                free = self.waitForPortFree(timeout: 3)
+            }
+            let still = free ? [] : self.listeningPIDs()
+            DispatchQueue.main.async {
+                if free {
+                    logLine("端口 \(self.config.port) 已释放，启动 host")
+                    self.startHostProcess()
+                } else {
+                    self.showError(
+                        title: "端口没有释放",
+                        detail: "停掉占用进程后 \(self.config.port) 仍被占用：\(still.map(String.init).joined(separator: ", "))。手动处理后重新打开。"
+                    )
+                }
+            }
+        }
+    }
+
+    private func waitForPortFree(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if listeningPIDs().isEmpty { return true }
+            Thread.sleep(forTimeInterval: 0.3)
+        }
+        return listeningPIDs().isEmpty
+    }
+
+    private func listeningPIDs() -> [Int32] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+        process.arguments = ["-nP", "-iTCP:\(config.port)", "-sTCP:LISTEN", "-t"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return [] }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        return text.split(separator: "\n").compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
+    }
+
+    private func commandLine(of pid: Int32) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-p", String(pid), "-o", "command="]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        guard (try? process.run()) != nil else { return "(读不到命令)" }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        return (String(data: data, encoding: .utf8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func looksLikeDSHWeb(_ command: String) -> Bool {
+        let lower = command.lowercased()
+        let hasWeb = lower.contains(" web") || lower.hasSuffix("web")
+        guard hasWeb else { return false }
+        return lower.contains("bin.js") || lower.contains("dsh")
     }
 
     private func armStartupTimeout() {

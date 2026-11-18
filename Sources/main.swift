@@ -377,10 +377,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard contentView.frame.contains(event.locationInWindow) else { return event }
         switch event.type {
         case .leftMouseDown:
-            if awaitingFirstClick {
-                let responder = window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-                logLine("首击事件 active=\(NSApp.isActive) key=\(window.isKeyWindow) 第一响应者=\(responder)")
-            }
             // 标题栏上的点击交给系统处理，也不清「首次点击」标记：
             // 点标题栏激活窗口之后，下一次点内容仍然需要重放。
             guard contentView.frame.contains(event.locationInWindow) else { return event }

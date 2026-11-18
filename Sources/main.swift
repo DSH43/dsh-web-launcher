@@ -324,6 +324,15 @@ final class HostServer {
 /// 用户看到的就是按钮要点两下才响应。
 final class ClickThroughWebView: WKWebView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// 网页容器不是第一响应者时，WebKit 会拿第一次 mouseDown 去聚焦，
+    /// 页面收不到这次点击。先把焦点拿到手，再交给 WebKit 处理。
+    override func mouseDown(with event: NSEvent) {
+        if window?.firstResponder !== self {
+            window?.makeFirstResponder(self)
+        }
+        super.mouseDown(with: event)
+    }
 }
 
 // MARK: - App
@@ -338,6 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
     private var launchURL: URL?
     private var startupTimeout: DispatchWorkItem?
     private var signalSources: [DispatchSourceSignal] = []
+    private var clickMonitor: Any?
     private var isTerminating = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -346,6 +356,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         buildMenu()
         buildWindow()
         beginHost()
+        // 点击进来之前先把焦点放回网页，避免第一次点击被容器吞掉。
+        clickMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] event in
+            self?.ensureWebFocus()
+            return event
+        }
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        ensureWebFocus()
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        ensureWebFocus()
+    }
+
+    private func ensureWebFocus() {
+        guard let window, let webView else { return }
+        // 端口冲突提示之类的模态窗口在前台时不要抢焦点。
+        guard window.isKeyWindow, window.attachedSheet == nil, NSApp.modalWindow == nil else { return }
+        guard window.firstResponder !== webView else { return }
+        window.makeFirstResponder(webView)
     }
 
     /// 让 `kill -TERM` 也走 AppKit 的正常退出路径，触发 host 收尾。
@@ -387,6 +418,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         webView.uiDelegate = self
         webView.allowsBackForwardNavigationGestures = true
         window.contentView = webView
+        // 先拿住第一响应者：否则回前台后的第一次点击会被网页容器拿去聚焦，不落到按钮上。
+        window.initialFirstResponder = webView
+        window.makeFirstResponder(webView)
 
         if window.setFrameUsingName("DSHWebLauncherWindow") == false {
             window.center()

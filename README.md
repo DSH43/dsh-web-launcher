@@ -18,6 +18,8 @@ cd dsh-web-launcher
 
 装好后从 `~/Applications` 或访达双击 **DSH Web**，第一次启动会写出配置文件。`build.sh` 只组装到 `dist/`，`install.sh` 会先调它再复制；换图标跑 `make-icon.sh`，改完逻辑用 `scripts/smoke.sh` 做一次生命周期自检（起、取 URL、关、查进程）。
 
+默认 ad-hoc 签名，每次重编后系统权限（屏幕录制、辅助功能）会失效。有 Developer ID 证书时用 `DSH_CODESIGN_IDENTITY="Developer ID Application: ..." ./scripts/install.sh` 签名，权限就能跨版本保留。
+
 ## 配置
 
 `~/.dsh/web-launcher.json`，第一次启动自动生成，路径支持 `~`：
@@ -42,6 +44,7 @@ cd dsh-web-launcher
 
 ## 行为
 
+- WebView 常驻第一响应者：从别的应用切回来时，第一次点击直接落到页面控件上，不会先被容器拿去聚焦。
 - 启动 `node <cli> web --no-open --host <host> --port <port>`，从它的 stdout 里取带一次性 token 的 URL，用 WKWebView 打开。60 秒没等到 URL 就判定失败，停掉 host 并显示错误页，附 stderr 和日志路径。
 - 关窗、Cmd+Q、`kill -TERM` 走同一条退出路径：先 SIGTERM，7 秒不退再 SIGKILL，host 停掉后 App 才退出。
 - 下载存到 `~/Downloads`，外部链接交给系统浏览器，页面的 alert/confirm/prompt 用原生弹窗。日志在 `~/Library/Logs/DSH Web Launcher.log`，菜单「显示 → 打开日志」直接打开。

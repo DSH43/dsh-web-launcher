@@ -377,6 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
         guard contentView.frame.contains(event.locationInWindow) else { return event }
         switch event.type {
         case .leftMouseDown:
+            logLine("收到点击 active=\(NSApp.isActive) key=\(window.isKeyWindow) awaiting=\(awaitingFirstClick)")
             guard awaitingFirstClick else { return event }
             awaitingFirstClick = false
             // 标题栏上的点击交给系统处理，只接管网页内容区。
@@ -415,13 +416,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, WKNa
             window.makeFirstResponder(webView)
             // 激活后再等一小会儿，给 WebKit 的 web 进程恢复焦点的时间。
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                webView.evaluateJavaScript("window.focus(); (document.body && document.body.focus()); String(document.hasFocus())") { value, _ in
-                    logLine("重放前 hasFocus=\(value ?? "nil")")
-                    window.sendEvent(down)
-                    if let up = self.pendingClickUp {
-                        window.sendEvent(up)
-                    }
-                    logLine("重放完成 active=\(NSApp.isActive) key=\(window.isKeyWindow)")
+                let cssX = down.locationInWindow.x
+                let cssY = webView.bounds.height - down.locationInWindow.y
+                let js = """
+                (function(){
+                  var el = document.elementFromPoint(\(cssX), \(cssY));
+                  if (!el) return 'nil';
+                  el.click();
+                  return el.tagName + '|' + (el.textContent || '').slice(0, 30);
+                })()
+                """
+                webView.evaluateJavaScript(js) { value, error in
+                    logLine("JS点击: \(value ?? error.map { "\($0)" } ?? "nil")")
                     self.pendingClickDown = nil
                     self.pendingClickUp = nil
                 }
